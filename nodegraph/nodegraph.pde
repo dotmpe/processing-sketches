@@ -1,185 +1,158 @@
-// Maurice Ribble 
-// 6-28-2009
-// http://www.glacialwanderer.com/hobbyrobotics
+/*
+	Plots a graph for one or more named fields reported over Serial.
 
-// This takes data off the serial port and graphs it.
-// There is an option to log this data to a file.
+	Announce:
+		[Node-ID] field1 ... fieldN
+	Report:
+		Node-ID value1 ... valueN
 
-// I wrote an arduino app that sends data in the format expected by this app.
-// The arduino app sends accelerometer and gyroscope data.
+	Based on work by Maurice Ribble 
+	http://www.glacialwanderer.com/hobbyrobotics
 
+2014-05-24
+	- Adapted to my own JeeNode inspired serial protocol. Needs some work on the
+	  protocol side but plotting OK.
+	- Scale is fixed to 0-1024, fine for def. Arduino. 
+	- TODO: Would want to do proper scaling based on range and resolution.
+	- TODO: add filewriter again
+*/
+		
 import processing.serial.*;
 
 // Globals
 int g_winW             = 820;   // Window Width
-int g_winH             = 600;   // Window Height
-boolean g_dumpToFile   = false;  // Dumps data to c:\\output.txt in a comma seperated format (easy to import into Excel)
+int g_winH             = 800;   // Window Height
 boolean g_enableFilter = true;  // Enables simple filter to help smooth out data.
+int g_legH             = 140; // Horizontal size legend
 
-cDataArray g_xAccel    = new cDataArray(200);
-cDataArray g_yAccel    = new cDataArray(200);
-cDataArray g_zAccel    = new cDataArray(200);
-cDataArray g_vRef      = new cDataArray(200);
-cDataArray g_xRate     = new cDataArray(200);
-cDataArray g_yRate     = new cDataArray(200);
-cGraph g_graph         = new cGraph(10, 190, 800, 400);
+String currentClient;
+
 Serial g_serial;
 PFont  g_font;
+// draw graph with 10px margin
+cGraph g_graph         = new cGraph(10, g_legH+10, g_winW-20, g_winH-g_legH-20);
+
+ArrayList<cDataArray> graphs;
+ArrayList<Client> clients;
+ArrayList<String> client_ids;
+
+int[][] colors = {
+	{ 255, 0, 0 },
+	{ 0, 255, 0 },
+	{ 0, 0, 255 },
+	{ 255, 255, 0 },
+	{ 255, 0, 255 },
+	{ 0, 255, 255 }
+};
+
+
+void reset() {
+	if (g_serial != null) {
+		//g_serial.stop();
+		graphs.clear();
+		clients.clear();
+		client_ids.clear();
+	} else {
+		graphs = new ArrayList<cDataArray>();
+		clients = new ArrayList<Client>();
+		client_ids = new ArrayList<String>();
+	}
+}
+
+void drawLegend() {
+	if (currentClient == null) {
+		return;
+	}
+	int indexOf = client_ids.indexOf(currentClient);
+	if (indexOf == -1) {
+		return;
+	}
+	Client client = clients.get(indexOf);
+	// This draws the graph key info
+	strokeWeight(1.5);
+	for (int i=0; i<client.fieldnames.length; i++) {
+		int[] c = colors[i];
+		stroke(c[0], c[1], c[2]);
+		line(20, (g_winH-g_legH+10)+(20*i), 35, (g_winH-g_legH+10)+(20*i));
+	}
+	for (int i=0; i<client.fieldnames.length; i++) {
+		int[] c = colors[i];
+		fill(c[0], c[1], c[2]);
+		text(client.fieldnames[i], 40, (g_winH-g_legH+15)+(20*i));
+	}
+}
 
 void setup()
 {
 	size(g_winW, g_winH, P2D);
 
+	reset();
+
 	println(Serial.list());
-	g_serial = new Serial(this, Serial.list()[1], 57600, 'N', 8, 1.0);
-	g_font = loadFont("ArialMT-20.vlw");
-	textFont(g_font, 20);
+	g_serial = new Serial(this, Serial.list()[4], 57600, 'N', 8, 1.0);
+	g_serial.bufferUntil('\n');
 
-	// This draws the graph key info
-	strokeWeight(1.5);
-	stroke(255, 0, 0);     line(20, 420, 35, 420);
-	stroke(0, 255, 0);     line(20, 440, 35, 440);
-	stroke(0, 0, 255);     line(20, 460, 35, 460);
-	stroke(255, 255, 0);   line(20, 480, 35, 480);
-	stroke(255, 0, 255);   line(20, 500, 35, 500);
-	stroke(0, 255, 255);   line(20, 520, 35, 520);
-	fill(0, 0, 0);
-	text("xAccel", 40, 430);
-	text("yAccel", 40, 450);
-	text("zAccel", 40, 470);
-	text("vRef", 40, 490);
-	text("xRate", 40, 510);
-	text("yRate", 40, 530);
+	//g_font = loadFont("ArialMT-20.vlw");
+	//textFont(g_font, 20);
 
-	if (g_dumpToFile)
-	{
-		// This clears deletes the old file each time the app restarts
-		byte[] tmpChars = {'\r', '\n'};
-		saveBytes("c:\\output.txt", tmpChars);
-	}
 }
 
 void draw()
 {
-	// We need to read in all the avilable data so graphing doesn't lag behind
-	while (g_serial.available() >= 2*6+2)
-	{
-		processSerialData();
-	}
-
 	strokeWeight(1);
 	fill(255, 255, 255);
 	g_graph.drawGraphBox();
 
+	drawLegend();
+
 	strokeWeight(1.5);
-	stroke(255, 0, 0);
-	g_graph.drawLine(g_xAccel, 0, 1024);
-	stroke(0, 255, 0);
-	g_graph.drawLine(g_yAccel, 0, 1024);
-	stroke(0, 0, 255);
-	g_graph.drawLine(g_zAccel, 0, 1024);
-	stroke(255, 255, 0);
-	g_graph.drawLine(g_vRef, 0, 1024);
-	stroke(255, 0, 255);
-	g_graph.drawLine(g_xRate, 0, 1024);
-	stroke(0, 255, 255);
-	g_graph.drawLine(g_yRate, 0, 1024);
+
+	int[] c;
+	for (int i=0; i<graphs.size(); i++) {
+		c = colors[i];
+		stroke(c[0], c[1], c[2]);
+		g_graph.drawLine(graphs.get(i), 0, 1024);
+	}
 }
 
-// This reads in one set of the data from the serial port
-void processSerialData()
-{
-	int inByte = 0;
-	int curMatchPos = 0;
-	int[] intBuf = new int[2];
+/** Consume strings from serial in line-based protocol */
+void serialEvent (Serial myPort) {
+	// get the ASCII string:
+	String inString = myPort.readStringUntil('\n');
 
-	intBuf[0] = 0xAD;
-	intBuf[1] = 0xDE;
-
-	while (g_serial.available() < 2); // Loop until we have enough bytes
-	inByte = g_serial.read();
-
-	// This while look looks for two bytes sent by the client 0xDEAD
-	// This allows us to resync the server and client if they ever
-	// loose sync.  In my testing I haven't seen them loose sync so
-	// this could be removed if you need to, but it is a good way to
-	// prevent catastrophic failure.
-	while(curMatchPos < 2)
-	{
-		if (inByte == intBuf[curMatchPos])
-		{
-			++curMatchPos;
-
-			if (curMatchPos == 2)
-				break;
-
-			while (g_serial.available() < 2); // Loop until we have enough bytes
-			inByte = g_serial.read();
-		}
-		else
-		{
-			if (curMatchPos == 0)
-			{
-				while (g_serial.available() < 2); // Loop until we have enough bytes
-				inByte = g_serial.read();
+	if (inString != null) {
+		// trim off any whitespace:
+		inString = trim(inString);
+		String[] lineparts = split(inString, ' ');
+		String[] parts = new String[lineparts.length-1];
+		String idpart = lineparts[0];
+		System.arraycopy(lineparts, 1, parts, 0, lineparts.length - 1);
+		int clientIndex = client_ids.indexOf(idpart);
+		if (clientIndex != -1) {
+			System.out.print(idpart+" ");
+			Client client = clients.get(clientIndex);
+			float[] values = client.parse(parts);
+			for (int i=0; i<values.length; i++) {
+				cDataArray data = graphs.get(i);
+				data.addVal(values[i]);
 			}
-			else
-			{
-				curMatchPos = 0;
+		} else {
+			if (idpart.indexOf('[') == 0 && idpart.indexOf(']') ==
+					idpart.length()-1) {
+				// XXX only one client
+				reset();
+				String id = idpart.substring(1, idpart.length()-1);
+				currentClient = id;
+				client_ids.add(id);
+				clients.add(new Client(id, parts));
+				for (int i=0;i<parts.length;i++) {
+					graphs.add(new cDataArray(g_winW));
+				}
+			} else {
+				System.out.print("? ");
+				System.out.println(idpart);
 			}
 		}
-	}
-
-	while (g_serial.available() < 2*6);  // Loop until we have a full set of data
-
-	// This reads in one set of data
-	{
-		byte[] inBuf = new byte[2];
-		int xAccel, yAccel, zAccel, vRef, xRate, yRate;
-
-		g_serial.readBytes(inBuf);
-		// Had to do some type conversion since Java doesn't support unsigned bytes
-		xAccel = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-		g_serial.readBytes(inBuf);
-		yAccel = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-		g_serial.readBytes(inBuf);
-		zAccel = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-		g_serial.readBytes(inBuf);
-		vRef   = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-		g_serial.readBytes(inBuf);
-		xRate  = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-		g_serial.readBytes(inBuf);
-		yRate  = ((int)(inBuf[1]&0xFF) << 8) + ((int)(inBuf[0]&0xFF) << 0);
-
-		g_xAccel.addVal(xAccel);
-		g_yAccel.addVal(yAccel);
-		g_zAccel.addVal(zAccel);
-		g_vRef.addVal(vRef);
-		g_xRate.addVal(xRate);
-		g_yRate.addVal(yRate);
-
-		if (g_dumpToFile)  // Dump data to a file if needed
-		{
-			String tempStr;
-			tempStr = xAccel + "," + yAccel + "," + zAccel + "," + vRef + "," + xRate + "," + yRate + "\r\n";
-			FileWriter file;
-
-			try  
-			{  
-				file = new FileWriter("c:\\output.txt", true); //bool tells to append
-				file.write(tempStr, 0, tempStr.length()); //(string, start char, end char)
-				file.close();
-			}  
-			catch(Exception e)  
-			{  
-				println("Error: Can't open file!");
-			}
-		}
-
-		/*
-		   print(xAccel);  print(" ");   print(yAccel);   print(" ");    print(zAccel);     print(" ");
-		   print(vRef);    print(" ");   print(xRate);    print(" ");    println(yRate);
-		 */
 	}
 }
 
@@ -200,7 +173,6 @@ class cDataArray
 
 	void addVal(float val)
 	{
-
 		if (g_enableFilter && (m_curSize != 0))
 		{
 			int indx;
@@ -281,4 +253,44 @@ class cGraph
 			line(x0, y0, x1, y1);
 		}
 	}
+}
+
+
+class Client 
+{
+	String id;
+	String[] fieldnames;
+
+	Client(String id, String[] fieldnames) {
+		this.id = id;
+		this.fieldnames = fieldnames;
+		System.out.println("New "+id);
+	}
+
+	float[] parse(String[] values) {
+		System.out.print("parse");
+		float[] r = new float[values.length];
+		for (int i=0; i<values.length; i++) {
+			r[i] = Float.parseFloat(values[i]);
+
+			System.out.print(' ');
+			System.out.print(values[i]);
+		}
+
+		System.out.println("");
+		return r;
+	}
+}
+
+static boolean isNumeric(String str)
+{
+	try
+	{
+		double d = Double.parseDouble(str);
+	}
+	catch(NumberFormatException nfe)
+	{
+		return false;
+	}
+	return true;
 }
